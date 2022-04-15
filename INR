@@ -1,0 +1,114 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import soundfile as sf
+
+
+
+
+def recorte(data):
+    """Function used to split an impulse response from its maximum to its ending,
+    resulting in a signal that only contains the slope of the IR and eliminates
+    Harmonic distortion components of an IR obtained from a sine sweep recording.
+    INPUT:
+        data: IR one-dimensional vector signal"""
+
+    in_max = np.where(abs(data) == np.max(abs(data)))[0]  # Windows signal from its maximum onwards.
+    in_max = int(in_max[0])
+    data = data[(in_max) + 5:]
+    return data
+
+
+
+def schroeder(ir, t, C, rms):
+    """ Smooths a curve (ir) using Schroeder Integration method. "t" and "C" are Lundeby's compensation arguments,
+    rms is Chu's compensation argument """
+    a = len(ir[int(t):len(ir)])
+    ir = ir[0:int(t)]
+    y = np.flip((np.cumsum(np.flip(ir - rms)) + C) / (np.sum(ir - rms) + C))
+    x = np.pad(y, (0, a))
+    return x
+
+
+def leastsquares(x, y):
+    """Given two vectors x and y of equal dimension, calculates
+    the slope and y intercept of the y2 = c + m*x slope, obtained
+    by least squares linear regression
+
+    Documentation for numpy function used:
+    https://het.as.utexas.edu/HET/Software/Numpy/reference/generated/numpy.linalg.lstsq.html
+
+    Output arguments
+    c = y-intercept
+    m = slope
+    y2 = least square line"""
+
+    # Rewriting the line equation as y = Ap, where A = [[x 1]]
+    # and p = [[m], [c]]
+    A = np.vstack([x, np.ones(len(x))]).T
+    m, c = np.linalg.lstsq(A, y, rcond=-1)[0]  # Finding coefficients m and c
+    y2 = m * x + c  # Fitted line
+    return m, c, y2
+
+
+def TR(y, fs):
+    """TR calculates T20, T30 and EDT parameters given a smoothed energy response "y" and its samplerate "fs" """
+    t = np.arange(0, len(y) / fs, 1 / fs)
+
+    i_max = np.where(y == max(y))  # Finds maximum of input vector
+    y = y[int(i_max[0][0]):]
+    i_edt = np.where((y <= max(y) - 1) & (y > (max(
+        y) - 10)))  # Index of values between 0 and -10 dB (Note: -1 to -10 dB interval used for calculations of EDT)
+    i_20 = np.where((y <= max(y) - 5) & (y > (max(y) - 25)))  # Index of values between -5 and -25 dB
+    i_30 = np.where((y <= max(y) - 5) & (y > (max(y) - 35)))  # Index of values between -5 and -35 dB
+
+    t_edt = t[i_edt]
+    t_20 = t[i_20]
+    t_30 = t[i_30]
+
+    y_edt = y[i_edt]
+    y_t20 = y[i_20]
+    y_t30 = y[i_30]
+
+    m_edt, c_edt, f_edt = leastsquares(t_edt,
+                                       y_edt)  # leastsquares function used to find slope intercept and line of each parameter
+    m_t20, c_t20, f_t20 = leastsquares(t_20, y_t20)
+    m_t30, c_t30, f_t30 = leastsquares(t_30, y_t30)
+
+    EDT = -60 / m_edt  # EDT, T20 and T30 calculations
+    T20 = -60 / m_t20
+    T30 = -60 / m_t30
+
+
+    return EDT, T20, T30
+
+
+def INR(y, fs):
+    y = recorte(y)
+    y = y / max(y)
+    y = y ** 2
+
+    y_noise = y[round(0.8 * len(y)):len(y)]  # Last 20% of the signal where the level is assumed to be constant in time.
+    LN = 10 * np.log10(max(y_noise))  
+
+    y_sch = schroeder(y, len(y), 0, 0)   # Schroeder, no Noise Comp
+    y_db = 10 * np.log10(np.abs(y_sch))  # Smoothed response in dB
+
+    EDT, T20, T30 = TR(y_db, fs)
+    h0_sq = np.max(y)  # h0 is the maximum impulse response value
+    S0 = 10 * np.log10(T20 * h0_sq / (6 * np.log(10)))
+    LIR = S0 + 10 * np.log10(6 * np.log(10) / T20)
+    INR = LIR - LN
+
+    # Plots
+    t = np.arange(0, len(y)/fs, 1/fs)
+    t = t[0:len(y)]
+    plt.plot(t, 10 * np.log10(y), zorder=0)
+    plt.plot(t, y_db, zorder=5, label='Suavizado por Schroeder')
+    plt.hlines(LN, 0, len(y)/fs, 'r', '--', zorder=15, label='LN')
+    plt.hlines(LIR, 0, len(y)/fs, 'b', '--', zorder=20, label='LIR')
+    plt.ylabel('Nivel [dB]')
+    plt.xlabel('Tiempo [s]')
+    plt.ylim([-120, 10])
+    plt.grid()
+    plt.legend(loc='lower right', framealpha=0.9)
+    return INR, LIR, LN
